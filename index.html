@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#0a0e1a" />
+<title>Cosmostation · 실시간 위성 레이더</title>
+<script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --panel: #121a2e;
+    --panel-2: #0f1626;
+    --line: #1f2a44;
+    --text: #e6edf7;
+    --muted: #8aa0c4;
+    --accent: #4cc9f0;
+    --iss: #ffd166;
+    --starlink: #ef476f;
+    --grid: #233458;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Malgun Gothic", "Noto Sans KR", Roboto, sans-serif;
+    min-height: 100vh;
+    overscroll-behavior: none;
+  }
+  header {
+    padding: 14px 16px 8px;
+    text-align: center;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  header .sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #status {
+    margin: 10px 16px 0;
+    padding: 10px 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.5;
+    word-break: keep-all;
+  }
+  #status.err { color: #ff8aa0; border-color: #4a1f2c; background: #1c1018; }
+  #status b { color: var(--text); font-weight: 600; }
+  .radar-wrap {
+    padding: 14px 16px 6px;
+    display: flex;
+    justify-content: center;
+  }
+  #radar {
+    width: 100%;
+    max-width: 480px;
+    aspect-ratio: 1 / 1;
+    display: block;
+    background: radial-gradient(circle at center, #0e1730 0%, #070b15 75%);
+    border-radius: 50%;
+    border: 1px solid var(--line);
+  }
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    padding: 4px 16px 10px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.iss { background: var(--iss); box-shadow: 0 0 8px var(--iss); }
+  .dot.starlink { background: var(--starlink); box-shadow: 0 0 8px var(--starlink); }
+  section.list {
+    padding: 4px 16px 24px;
+  }
+  section.list h2 {
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 14px 4px 8px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  ul#sat-list {
+    list-style: none;
+    margin: 0; padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  ul#sat-list li {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 12px;
+    align-items: center;
+  }
+  ul#sat-list .name {
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  ul#sat-list .meta {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+  ul#sat-list .meta b { color: var(--text); font-weight: 500; }
+  ul#sat-list .range {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .empty {
+    text-align: center;
+    padding: 20px 12px;
+    color: var(--muted);
+    font-size: 13px;
+    background: var(--panel-2);
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+  }
+  footer {
+    padding: 6px 16px 22px;
+    text-align: center;
+    font-size: 11px;
+    color: #5f7299;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🛰️ Cosmostation</h1>
+    <div class="sub">실시간 내 위치 기준 인공위성 / ISS 추적 레이더</div>
+  </header>
+
+  <div id="status">위치 권한을 요청하는 중…</div>
+
+  <div class="radar-wrap">
+    <canvas id="radar" aria-label="위성 레이더"></canvas>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot iss"></i> ISS</span>
+    <span><i class="dot starlink"></i> Starlink</span>
+  </div>
+
+  <section class="list">
+    <h2>현재 지평선 위 위성</h2>
+    <ul id="sat-list"></ul>
+  </section>
+
+  <footer>TLE 데이터는 샘플이며 정확도를 위해 주기적으로 갱신해야 합니다.</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  // -------------------- 샘플 TLE --------------------
+  // 형식: [이름, line1, line2, 타입]
+  // 주의: 실제 운용 시에는 CelesTrak 등에서 최신 TLE를 주기적으로 갱신해야 합니다.
+  const TLES = [
+    [
+      'ISS (ZARYA)',
+      '1 25544U 98067A   25340.54791667  .00016717  00000-0  10270-3 0  9991',
+      '2 25544  51.6416 247.4627 0006703  92.8340 267.3124 15.50284635000017',
+      'iss'
+    ],
+    [
+      'STARLINK-1007',
+      '1 44713U 19074A   25340.50000000  .00002182  00000-0  16538-3 0  9998',
+      '2 44713  53.0540 102.4321 0001423  85.3022 274.8101 15.06390823000016',
+      'starlink'
+    ],
+    [
+      'STARLINK-1130',
+      '1 45657U 20025E   25340.50000000  .00001930  00000-0  14821-3 0  9994',
+      '2 45657  53.0537 154.7833 0001310  79.4112 280.7012 15.06390021000019',
+      'starlink'
+    ],
+    [
+      'STARLINK-2046',
+      '1 47432U 21005L   25340.50000000  .00002411  00000-0  17721-3 0  9990',
+      '2 47432  53.0526 320.1457 0001541  83.1130 277.0008 15.06400112000015',
+      'starlink'
+    ]
+  ];
+
+  // -------------------- 상수 --------------------
+  const DEG = 180 / Math.PI;
+  const RAD = Math.PI / 180;
+
+  // -------------------- DOM --------------------
+  const $status = document.getElementById('status');
+  const $list   = document.getElementById('sat-list');
+  const canvas  = document.getElementById('radar');
+  const ctx     = canvas.getContext('2d');
+
+  // -------------------- 상태 --------------------
+  let observer = null;      // {latitude, longitude, height} (rad, rad, km)
+  let satrecs  = [];        // [{name, satrec, type}]
+  let tickHandle = null;
+  let dprCache = 1;
+
+  // -------------------- 유틸 --------------------
+  function setStatus(html, isError = false) {
+    $status.innerHTML = html;
+    $status.classList.toggle('err', isError);
+  }
+
+  function safeNum(v) {
+    return (typeof v === 'number' && isFinite(v)) ? v : NaN;
+  }
+
+  // -------------------- TLE 파싱 --------------------
+  function parseTLEs() {
+    satrecs = [];
+    for (const [name, l1, l2, type] of TLES) {
+      try {
+        const rec = satellite.twoline2satrec(l1, l2);
+        if (rec && rec.error === 0) {
+          satrecs.push({ name, satrec: rec, type });
+        } else {
+          console.warn('TLE 파싱 실패:', name, rec && rec.error);
+        }
+      } catch (e) {
+        console.warn('TLE 예외:', name, e);
+      }
+    }
+  }
+
+  // -------------------- 위치 권한 --------------------
+  function requestLocation() {
+    if (!('geolocation' in navigator)) {
+      setStatus('이 브라우저는 위치 정보(Geolocation)를 지원하지 않습니다.', true);
+      return;
+    }
+    setStatus('위치 권한을 요청하는 중…');
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude, altitude } = pos.coords;
+        observer = {
+          latitude:  latitude  * RAD,
+          longitude: longitude * RAD,
+          height:    (altitude && isFinite(altitude)) ? altitude / 1000 : 0.05 // km
+        };
+        setStatus(
+          `📍 <b>현재 위치</b> &nbsp; 위도 ${latitude.toFixed(4)}°, 경도 ${longitude.toFixed(4)}°`
+        );
+        startTracking();
+      },
+      err => {
+        let msg = '위치 정보를 가져오지 못했습니다.';
+        if (err.code === 1) msg = '위치 권한이 거부되었습니다. 브라우저 설정에서 권한을 허용해 주세요.';
+        else if (err.code === 2) msg = '위치 정보를 사용할 수 없습니다. (네트워크/GPS 확인)';
+        else if (err.code === 3) msg = '위치 요청이 시간 초과되었습니다.';
+        setStatus(msg, true);
+        // 위치 실패 시에도 레이더 격자는 그려둔다
+        resizeCanvas();
+        drawRadar([]);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }
+
+  // -------------------- 위성 계산 --------------------
+  function computePositions(now) {
+    if (!observer) return [];
+    const gmst = satellite.gstime(now);
+    const results = [];
+
+    for (const { name, satrec, type } of satrecs) {
+      let pv;
+      try {
+        pv = satellite.propagate(satrec, now);
+      } catch (_) { continue; }
+      if (!pv || !pv.position) continue;
+      const eci = pv.position;
+      if (!eci || !isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) continue;
+
+      let ecf, look;
+      try {
+        ecf  = satellite.eciToEcf(eci, gmst);
+        look = satellite.ecfToLookAngles(observer, ecf);
+      } catch (_) { continue; }
+      if (!look) continue;
+
+      const az  = safeNum(look.azimuth);    // rad
+      const el  = safeNum(look.elevation);  // rad
+      const rng = safeNum(look.rangeSat);   // km
+      if (!isFinite(az) || !isFinite(el) || !isFinite(rng)) continue;
+
+      results.push({
+        name, type,
+        azimuthDeg:   ((az * DEG) % 360 + 360) % 360,
+        elevationDeg: el * DEG,
+        rangeKm:      rng
+      });
+    }
+    return results;
+  }
+
+  // -------------------- Canvas: 해상도 대응 --------------------
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    dprCache = dpr;
+    const size = Math.max(1, Math.floor(rect.width));
+    canvas.width  = size * dpr;
+    canvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // -------------------- 레이더 그리기 --------------------
+  function drawRadar(sats) {
+    const w = canvas.width  / dprCache;
+    const h = canvas.height / dprCache;
+    if (w <= 0 || h <= 0) return;
+
+    const cx = w / 2;
+    const cy = h / 2;
+    const R  = Math.min(w, h) / 2 - 18;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // 동심원 (고도 0, 30, 60, 90)
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(76, 201, 240, 0.18)';
+    for (let i = 1; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * (i / 3), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // 바깥 원 (지평선)
+    ctx.strokeStyle = 'rgba(76, 201, 240, 0.45)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 십자선
+    ctx.strokeStyle = 'rgba(76, 201, 240, 0.18)';
+    ctx.beginPath();
+    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+    ctx.stroke();
+
+    // 방위각 라벨
+    ctx.fillStyle = '#9fb4d9';
+    ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', cx,      cy - R - 8);
+    ctx.fillText('S', cx,      cy + R + 9);
+    ctx.fillText('E', cx + R + 9, cy);
+    ctx.fillText('W', cx - R - 9, cy);
+
+    // 고도 라벨 (중심: 90°, 외곽: 0°)
+    ctx.fillStyle = 'rgba(159, 180, 217, 0.55)';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('90°', cx + 3, cy - 2);
+    ctx.fillText('60°', cx + 3, cy - R / 3);
+    ctx.fillText('30°', cx + 3, cy - (2 * R) / 3);
+    ctx.fillText('0°',  cx + 3, cy - R + 2);
+
+    // 위성 점
+    for (const s of sats) {
+      if (s.elevationDeg < 0) continue;
+      const r  = R * (1 - s.elevationDeg / 90);
+      const az = s.azimuthDeg * RAD;
+      const x  = cx + r * Math.sin(az);
+      const y  = cy - r * Math.cos(az);
+      const color = (s.type === 'iss') ? '#ffd166' : '#ef476f';
+
+      // 글로우
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.arc(x, y, s.type === 'iss' ? 6 : 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // 이름
+      ctx.fillStyle = '#e6edf7';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s.name, x + 9, y);
+    }
+  }
+
+  // -------------------- 리스트 --------------------
+  function renderList(sats) {
+    if (!sats.length) {
+      $list.innerHTML = '<div class="empty">현재 지평선 위에 떠 있는 위성이 없습니다.<br>잠시 후 다시 확인해 주세요.</div>';
+      return;
+    }
+    sats.sort((a, b) => b.elevationDeg - a.elevationDeg);
+
+    const compassFromAz = az => {
+      const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+      return dirs[Math.round(az / 45) % 8];
+    };
+
+    $list.innerHTML = sats.map(s => {
+      const dotClass = s.type === 'iss' ? 'iss' : 'starlink';
+      return `
+        <li>
+          <div class="name"><span class="dot ${dotClass}"></span>${s.name}</div>
+          <div class="range">${s.rangeKm.toLocaleString(undefined,{maximumFractionDigits:0})} km</div>
+          <div class="meta">
+            <span>방위각 <b>${s.azimuthDeg.toFixed(1)}°</b> (${compassFromAz(s.azimuthDeg)})</span>
+            <span>고도각 <b>${s.elevationDeg.toFixed(1)}°</b></span>
+          </div>
+        </li>
+      `;
+    }).join('');
+  }
+
+  // -------------------- 메인 루프 --------------------
+  function tick() {
+    const now = new Date();
+    const sats = computePositions(now);
+    const visible = sats.filter(s => s.elevationDeg >= 0);
+    drawRadar(visible);
+    renderList(visible);
+  }
+
+  function startTracking() {
+    if (tickHandle) clearInterval(tickHandle);
+    resizeCanvas();
+    tick();
+    tickHandle = setInterval(tick, 1000);
+  }
+
+  // -------------------- 이벤트 --------------------
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeCanvas();
+      tick();
+    }, 120);
+  });
+  window.addEventListener('orientationchange', () => {
+    setTimeout(() => { resizeCanvas(); tick(); }, 200);
+  });
+
+  // -------------------- 부트스트랩 --------------------
+  function boot() {
+    if (typeof satellite === 'undefined') {
+      setStatus('satellite.js 라이브러리를 불러오지 못했습니다. 네트워크를 확인하세요.', true);
+      return;
+    }
+    parseTLEs();
+    if (!satrecs.length) {
+      setStatus('TLE 데이터를 파싱하지 못했습니다.', true);
+      return;
+    }
+    resizeCanvas();
+    drawRadar([]);
+    requestLocation();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
