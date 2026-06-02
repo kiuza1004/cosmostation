@@ -194,6 +194,97 @@
     border-top: 1px dashed var(--line);
     margin: 0 12px;
   }
+  /* 카메라 AR 모드 */
+  .btn-camera {
+    display: block;
+    width: calc(100% - 32px);
+    margin: 10px 16px 0;
+    padding: 12px;
+    background: linear-gradient(135deg, #1d2f56, #1c4380);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+  }
+  .btn-camera:active { transform: translateY(1px); }
+  #camera-view {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: #000;
+    overscroll-behavior: contain;
+  }
+  #camera-view[hidden] { display: none !important; }
+  #cam-video, #ar-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  #ar-canvas { pointer-events: none; }
+  #ar-hud-top {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0));
+    color: #fff;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  #ar-hud-top b { font-weight: 600; }
+  #ar-hud-bottom {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    padding: 14px 16px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    background: linear-gradient(to top, rgba(0,0,0,0.7), rgba(0,0,0,0));
+    color: #fff;
+    display: grid;
+    gap: 10px;
+  }
+  #ar-hud-bottom .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+  }
+  #ar-hud-bottom input[type=range] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+  #ar-close {
+    background: rgba(255,255,255,0.16);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    min-width: 84px;
+  }
+  #ar-status {
+    position: absolute;
+    top: 50%; left: 16px; right: 16px;
+    transform: translateY(-50%);
+    background: rgba(0,0,0,0.78);
+    color: #fff;
+    padding: 16px;
+    border-radius: 12px;
+    text-align: center;
+    font-size: 13.5px;
+    line-height: 1.55;
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  #ar-status[hidden] { display: none; }
   /* 패스 예측 */
   #pass-list .when {
     grid-column: 1 / -1;
@@ -234,6 +325,8 @@
     <canvas id="radar" aria-label="위성 레이더"></canvas>
   </div>
 
+  <button id="mode-camera" class="btn-camera" type="button">📷 카메라로 직접 보기</button>
+
   <div class="legend">
     <span><i class="dot iss"></i> ISS</span>
     <span><i class="dot starlink"></i> Starlink</span>
@@ -253,6 +346,27 @@
   </section>
 
   <footer id="source">TLE 데이터를 준비 중…</footer>
+
+  <div id="camera-view" hidden>
+    <video id="cam-video" autoplay playsinline muted></video>
+    <canvas id="ar-canvas" aria-label="AR 오버레이"></canvas>
+    <div id="ar-hud-top">
+      <span id="ar-heading">방향: --</span>
+      <span id="ar-pitch">고도: --</span>
+    </div>
+    <div id="ar-status" hidden>준비 중…</div>
+    <div id="ar-hud-bottom">
+      <div class="row">
+        <span>가로 FOV</span>
+        <input type="range" id="ar-fov" min="30" max="100" step="1" value="60" />
+        <span id="ar-fov-val">60°</span>
+      </div>
+      <div class="row">
+        <span style="opacity:.8;flex:1">폰을 들어 하늘을 향하세요. 위 숫자가 보고 있는 방위입니다.</span>
+        <button id="ar-close" type="button">✕ 닫기</button>
+      </div>
+    </div>
+  </div>
 
 <script>
 (() => {
@@ -357,6 +471,16 @@
 
   function safeNum(v) {
     return (typeof v === 'number' && isFinite(v)) ? v : NaN;
+  }
+
+  function compassFromAz(az) {
+    const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+    return dirs[Math.round(az / 45) % 8];
+  }
+
+  // 두 방위(0..360) 사이 -180..180 차이
+  function wrapAngle(d) {
+    return ((d + 180) % 360 + 360) % 360 - 180;
   }
 
   // -------------------- TLE 파싱 (satrec 변환) --------------------
@@ -630,11 +754,6 @@
     }
     sats.sort((a, b) => b.elevationDeg - a.elevationDeg);
 
-    const compassFromAz = az => {
-      const dirs = ['N','NE','E','SE','S','SW','W','NW'];
-      return dirs[Math.round(az / 45) % 8];
-    };
-
     $list.innerHTML = sats.map(s => {
       const m = meta(s.type);
       return `
@@ -784,6 +903,216 @@
     passRefreshHandle = setInterval(refreshPasses, PREDICT_REFRESH_MS);
   }
 
+  // -------------------- 카메라 AR 모드 --------------------
+  // 후면 카메라 영상 위에 위성을 az/el 차이에 따라 점/이름으로 오버레이.
+  // 헤딩(진북 기준 방위)과 피치(카메라가 향하는 고도각)는 DeviceOrientation에서 받음.
+  // - iOS: webkitCompassHeading 사용 (진북, CW)
+  // - 안드로이드: alpha를 (360 - alpha) % 360 으로 대략 진북 환산 (자기 보정에 따라 오차 있음)
+  // 화면 회전은 세로(portrait) 가정. 가로 시 HUD 안내만 띄움.
+
+  const $camView     = document.getElementById('camera-view');
+  const $camVideo    = document.getElementById('cam-video');
+  const $arCanvas    = document.getElementById('ar-canvas');
+  const $arStatus    = document.getElementById('ar-status');
+  const $arHeadingEl = document.getElementById('ar-heading');
+  const $arPitchEl   = document.getElementById('ar-pitch');
+  const $arFov       = document.getElementById('ar-fov');
+  const $arFovVal    = document.getElementById('ar-fov-val');
+  const $arClose     = document.getElementById('ar-close');
+  const $btnCamera   = document.getElementById('mode-camera');
+  const arCtx        = $arCanvas.getContext('2d');
+
+  let cameraStream      = null;
+  let arRAF             = null;
+  let arHeading         = null;   // deg, 0=N, CW (null = 미지원/미수신)
+  let arPitch           = 0;      // deg, 0=수평, +위, -아래
+  let arFovH            = 60;     // 가로 시야각
+  let orientationBound  = false;
+  let arDpr             = 1;
+
+  function setArStatus(html) {
+    if (!html) { $arStatus.hidden = true; return; }
+    $arStatus.innerHTML = html;
+    $arStatus.hidden = false;
+  }
+
+  async function enterCameraMode() {
+    if (!observer) {
+      alert('먼저 위치 권한이 필요합니다.');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('이 브라우저는 카메라(getUserMedia)를 지원하지 않습니다.');
+      return;
+    }
+    $camView.hidden = false;
+    setArStatus('카메라 권한 요청 중…');
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+    } catch (e) {
+      setArStatus('카메라를 사용할 수 없습니다.<br>' + (e && e.message || e));
+      return;
+    }
+    $camVideo.srcObject = cameraStream;
+    setArStatus('기기 방향 권한 요청 중…');
+    await requestOrientationPermission();
+    if (arHeading === null) {
+      setArStatus('방향 센서가 비활성/미지원입니다.<br>점은 표시되지만 정렬이 부정확할 수 있어요.');
+      setTimeout(() => { if ($arStatus && $arStatus.textContent.includes('방향 센서')) setArStatus(''); }, 3500);
+    } else {
+      setArStatus('');
+    }
+    resizeAR();
+    if (arRAF) cancelAnimationFrame(arRAF);
+    arRAF = requestAnimationFrame(drawARLoop);
+  }
+
+  async function requestOrientationPermission() {
+    if (orientationBound) return;
+    const DOE = window.DeviceOrientationEvent;
+    if (DOE && typeof DOE.requestPermission === 'function') {
+      try {
+        const res = await DOE.requestPermission();
+        if (res !== 'granted') return;
+      } catch { return; }
+    }
+    window.addEventListener('deviceorientation', onOrientation, true);
+    if ('ondeviceorientationabsolute' in window) {
+      window.addEventListener('deviceorientationabsolute', onOrientation, true);
+    }
+    orientationBound = true;
+  }
+
+  function onOrientation(e) {
+    let heading = null;
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      heading = e.webkitCompassHeading;
+    } else if (typeof e.alpha === 'number') {
+      heading = (360 - e.alpha) % 360;
+    }
+    if (heading !== null && isFinite(heading)) arHeading = heading;
+    // beta: 폰 앞뒤 기울기. 폰을 수직으로 들고 카메라가 수평이면 beta≈90 → pitch=0
+    if (typeof e.beta === 'number' && isFinite(e.beta)) {
+      arPitch = e.beta - 90;
+    }
+  }
+
+  function resizeAR() {
+    const rect = $arCanvas.getBoundingClientRect();
+    arDpr = window.devicePixelRatio || 1;
+    $arCanvas.width  = Math.max(1, Math.floor(rect.width  * arDpr));
+    $arCanvas.height = Math.max(1, Math.floor(rect.height * arDpr));
+    arCtx.setTransform(arDpr, 0, 0, arDpr, 0, 0);
+  }
+
+  function drawARLoop() {
+    arRAF = requestAnimationFrame(drawARLoop);
+    const sats = computePositions(new Date()).filter(s => s.elevationDeg >= 0);
+    drawAR(sats);
+    if (arHeading !== null) {
+      $arHeadingEl.innerHTML = `방향: <b>${compassFromAz(arHeading)} ${arHeading.toFixed(0)}°</b>`;
+    } else {
+      $arHeadingEl.textContent = '방향: --';
+    }
+    $arPitchEl.innerHTML = `카메라 고도: <b>${arPitch.toFixed(0)}°</b>`;
+  }
+
+  function drawAR(sats) {
+    const W = $arCanvas.width  / arDpr;
+    const H = $arCanvas.height / arDpr;
+    if (W <= 0 || H <= 0) return;
+    arCtx.clearRect(0, 0, W, H);
+    if (arHeading === null) return;
+
+    const camAz = arHeading;
+    const camEl = arPitch;
+    const hFov  = arFovH;
+    const vFov  = hFov * (H / W);
+    const halfH = hFov / 2;
+    const halfV = vFov / 2;
+
+    for (const s of sats) {
+      const dx = wrapAngle(s.azimuthDeg - camAz); // -180..180
+      const dy = s.elevationDeg - camEl;
+      const m  = meta(s.type);
+
+      if (Math.abs(dx) <= halfH && Math.abs(dy) <= halfV) {
+        const x = W / 2 + (dx / halfH) * (W / 2);
+        const y = H / 2 - (dy / halfV) * (H / 2);
+        // 본 점
+        arCtx.beginPath();
+        arCtx.fillStyle   = m.color;
+        arCtx.shadowColor = m.color;
+        arCtx.shadowBlur  = 14;
+        arCtx.arc(x, y, m.radius + 1.5, 0, Math.PI * 2);
+        arCtx.fill();
+        arCtx.shadowBlur = 0;
+        // 외곽 링
+        arCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+        arCtx.lineWidth   = 1.5;
+        arCtx.beginPath();
+        arCtx.arc(x, y, m.radius + 8, 0, Math.PI * 2);
+        arCtx.stroke();
+        // 이름
+        arCtx.fillStyle    = '#fff';
+        arCtx.font         = 'bold 12px -apple-system, sans-serif';
+        arCtx.textAlign    = 'left';
+        arCtx.textBaseline = 'middle';
+        arCtx.fillText(s.name, x + m.radius + 12, y);
+      } else {
+        // 화면 밖 → 가장자리 화살표 (사각형 가장자리로 투영)
+        const angle = Math.atan2(-dy, dx); // 화면 y는 위가 -. dy>0(위)이면 angle 음수가 위쪽
+        const margin = 26;
+        const cx = W / 2, cy = H / 2;
+        const halfW = W / 2 - margin;
+        const halfHp = H / 2 - margin;
+        const ca = Math.cos(angle), sa = Math.sin(angle);
+        const tx = ca !== 0 ? halfW / Math.abs(ca) : Infinity;
+        const ty = sa !== 0 ? halfHp / Math.abs(sa) : Infinity;
+        const t  = Math.min(tx, ty);
+        const ax = cx + ca * t;
+        const ay = cy + sa * t;
+        arCtx.fillStyle = m.color;
+        arCtx.beginPath();
+        arCtx.arc(ax, ay, 4, 0, Math.PI * 2);
+        arCtx.fill();
+        // 작은 화살표(삼각형) — 중심을 가리킴
+        arCtx.save();
+        arCtx.translate(ax, ay);
+        arCtx.rotate(angle + Math.PI); // 화살표 끝이 중심쪽으로
+        arCtx.fillStyle = m.color;
+        arCtx.beginPath();
+        arCtx.moveTo(8, 0);
+        arCtx.lineTo(0, 5);
+        arCtx.lineTo(0, -5);
+        arCtx.closePath();
+        arCtx.fill();
+        arCtx.restore();
+      }
+    }
+  }
+
+  function exitCameraMode() {
+    if (arRAF) cancelAnimationFrame(arRAF);
+    arRAF = null;
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(t => t.stop());
+      cameraStream = null;
+    }
+    $camVideo.srcObject = null;
+    $camView.hidden = true;
+  }
+
+  $btnCamera.addEventListener('click', enterCameraMode);
+  $arClose.addEventListener('click', exitCameraMode);
+  $arFov.addEventListener('input', () => {
+    arFovH = +$arFov.value;
+    $arFovVal.textContent = `${arFovH}°`;
+  });
+
   // -------------------- 이벤트 --------------------
   let resizeTimer = null;
   window.addEventListener('resize', () => {
@@ -791,10 +1120,15 @@
     resizeTimer = setTimeout(() => {
       resizeCanvas();
       tick();
+      if (!$camView.hidden) resizeAR();
     }, 120);
   });
   window.addEventListener('orientationchange', () => {
-    setTimeout(() => { resizeCanvas(); tick(); }, 200);
+    setTimeout(() => {
+      resizeCanvas();
+      tick();
+      if (!$camView.hidden) resizeAR();
+    }, 200);
   });
 
   // -------------------- 부트스트랩 --------------------
