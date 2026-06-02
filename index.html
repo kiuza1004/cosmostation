@@ -148,6 +148,59 @@
     font-size: 11px;
     color: #5f7299;
   }
+  /* 사용법 */
+  details.usage {
+    margin: 10px 16px 0;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 13px;
+    overflow: hidden;
+  }
+  details.usage summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    list-style: none;
+    color: var(--text);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  details.usage summary::-webkit-details-marker { display: none; }
+  details.usage summary::after {
+    content: '▾';
+    color: var(--muted);
+    transition: transform .2s;
+  }
+  details.usage[open] summary::after { transform: rotate(180deg); }
+  details.usage ol {
+    margin: 0; padding: 4px 28px 14px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  details.usage ol b { color: var(--text); font-weight: 600; }
+  details.usage .note {
+    padding: 8px 12px 14px;
+    color: #9fb4d9;
+    font-size: 12px;
+    border-top: 1px dashed var(--line);
+    margin: 0 12px;
+  }
+  /* 패스 예측 */
+  #pass-list .when {
+    grid-column: 1 / -1;
+    font-size: 11.5px;
+    color: var(--accent);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  #pass-list .loading {
+    text-align: center;
+    padding: 16px 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
 </style>
 </head>
 <body>
@@ -155,6 +208,18 @@
     <h1>🛰️ Cosmostation</h1>
     <div class="sub">실시간 내 위치 기준 인공위성 / ISS 추적 레이더</div>
   </header>
+
+  <details class="usage">
+    <summary>사용법 보기</summary>
+    <ol>
+      <li><b>위치 권한 허용</b> — 브라우저가 위치를 묻습니다. 허용해야 정확한 방위각/고도각을 계산합니다.</li>
+      <li><b>레이더 읽기</b> — 원의 <b>중심은 머리 위(천정, 고도 90°)</b>, <b>바깥 원은 지평선(0°)</b>입니다. 위쪽이 북(N).</li>
+      <li><b>실시간 위성</b> — 지평선 위에 있는 위성만 점과 이름으로 표시됩니다. 아래 리스트에서 방위각·고도각·거리를 확인하세요.</li>
+      <li><b>출현 예상</b> — 앞으로 4시간 안에 지평선 위로 떠오를 위성을 시간 순으로 예측합니다.</li>
+      <li><b>관측 팁</b> — 일출 전 / 일몰 후 1~2시간이 위성이 햇빛을 반사해 가장 잘 보이는 시간대입니다. 도시 광공해를 피하면 좋습니다.</li>
+    </ol>
+    <div class="note">※ TLE 데이터는 CelesTrak에서 자동으로 갱신되며, 위치/네트워크 권한이 필요합니다.</div>
+  </details>
 
   <div id="status">위치 권한을 요청하는 중…</div>
 
@@ -170,6 +235,11 @@
   <section class="list">
     <h2>현재 지평선 위 위성</h2>
     <ul id="sat-list"></ul>
+  </section>
+
+  <section class="list">
+    <h2>출현 예상 (앞으로 4시간)</h2>
+    <ul id="pass-list"><div class="loading">위치 확인 후 계산됩니다…</div></ul>
   </section>
 
   <footer id="source">TLE 데이터를 준비 중…</footer>
@@ -362,6 +432,7 @@
           `📍 <b>현재 위치</b> &nbsp; 위도 ${latitude.toFixed(4)}°, 경도 ${longitude.toFixed(4)}°`
         );
         startTracking();
+        schedulePassRefresh();
       },
       err => {
         let msg = '위치 정보를 가져오지 못했습니다.';
@@ -546,6 +617,125 @@
     resizeCanvas();
     tick();
     tickHandle = setInterval(tick, 1000);
+  }
+
+  // -------------------- 패스 예측 --------------------
+  const PREDICT_WINDOW_SEC = 4 * 60 * 60;     // 4시간
+  const PREDICT_STEP_SEC   = 30;               // 30초 간격 샘플링
+  const PREDICT_REFRESH_MS = 5 * 60 * 1000;    // 5분마다 재계산
+  let passRefreshHandle = null;
+
+  function elevationAt(satrec, obs, date) {
+    let pv;
+    try { pv = satellite.propagate(satrec, date); } catch { return null; }
+    if (!pv || !pv.position) return null;
+    const eci = pv.position;
+    if (!isFinite(eci.x) || !isFinite(eci.y) || !isFinite(eci.z)) return null;
+    try {
+      const gmst = satellite.gstime(date);
+      const ecf = satellite.eciToEcf(eci, gmst);
+      const look = satellite.ecfToLookAngles(obs, ecf);
+      const el = look && look.elevation;
+      return (typeof el === 'number' && isFinite(el)) ? el * DEG : null;
+    } catch { return null; }
+  }
+
+  // 위성 1기에 대해 fromTime 이후 첫 패스(rise→set)를 탐색
+  function findNextPass(satrec, obs, fromTime, windowSec, stepSec) {
+    const firstEl = elevationAt(satrec, obs, fromTime);
+    // 시작 시점에 이미 떠 있다면 일단 set될 때까지 기다린 뒤 다음 rise 탐색
+    let waitingForSet = (firstEl !== null && firstEl >= 0);
+    let inPass = false;
+    let rise = null, maxEl = -Infinity, set = null;
+
+    for (let t = stepSec; t <= windowSec; t += stepSec) {
+      const date = new Date(fromTime.getTime() + t * 1000);
+      const el = elevationAt(satrec, obs, date);
+      if (el === null) continue;
+
+      if (waitingForSet) {
+        if (el < 0) waitingForSet = false;
+        continue;
+      }
+      if (!inPass) {
+        if (el >= 0) { inPass = true; rise = date; maxEl = el; }
+      } else {
+        if (el > maxEl) maxEl = el;
+        if (el < 0) { set = date; return { rise, set, maxEl }; }
+      }
+    }
+    return inPass ? { rise, set: null, maxEl, ongoing: true } : null;
+  }
+
+  async function predictPassesAsync() {
+    if (!observer) return [];
+    const now = new Date();
+    const results = [];
+    for (const s of satrecs) {
+      // 위성마다 UI에 양보 (모바일에서도 부드럽게)
+      await new Promise(r => setTimeout(r, 0));
+      const p = findNextPass(s.satrec, observer, now, PREDICT_WINDOW_SEC, PREDICT_STEP_SEC);
+      if (p && p.rise) {
+        results.push({ name: s.name, type: s.type, rise: p.rise, set: p.set, maxEl: p.maxEl });
+      }
+    }
+    results.sort((a, b) => a.rise - b.rise);
+    return results;
+  }
+
+  function fmtClock(d) {
+    return d.toLocaleTimeString('ko-KR', { hour12: false });
+  }
+  function fmtRel(d) {
+    const diffSec = (d.getTime() - Date.now()) / 1000;
+    if (diffSec < 60)  return '곧';
+    if (diffSec < 3600) return `${Math.round(diffSec / 60)}분 후`;
+    const h = Math.floor(diffSec / 3600);
+    const m = Math.round((diffSec % 3600) / 60);
+    return `${h}시간 ${m}분 후`;
+  }
+
+  function renderPassList(passes) {
+    const $pass = document.getElementById('pass-list');
+    if (!$pass) return;
+    if (!passes.length) {
+      $pass.innerHTML = '<div class="empty">앞으로 4시간 내 예상되는 위성 패스가 없습니다.</div>';
+      return;
+    }
+    $pass.innerHTML = passes.map(p => {
+      const dotClass = p.type === 'iss' ? 'iss' : 'starlink';
+      const typeLabel = p.type === 'iss' ? 'ISS · 우주정거장' : 'Starlink · 통신위성';
+      const setTxt = p.set ? `~ ${fmtClock(p.set)}` : '(범위 밖)';
+      const dur = p.set ? Math.max(1, Math.round((p.set - p.rise) / 60000)) : null;
+      return `
+        <li>
+          <div class="name"><span class="dot ${dotClass}"></span>${p.name}</div>
+          <div class="range">${fmtRel(p.rise)}</div>
+          <div class="when">출현 ${fmtClock(p.rise)} ${setTxt}</div>
+          <div class="meta">
+            <span>${typeLabel}</span>
+            <span>최대고도 <b>${p.maxEl.toFixed(1)}°</b></span>
+            ${dur !== null ? `<span>지속 <b>${dur}분</b></span>` : ''}
+          </div>
+        </li>
+      `;
+    }).join('');
+  }
+
+  async function refreshPasses() {
+    const $pass = document.getElementById('pass-list');
+    if ($pass && !$pass.children.length) {
+      $pass.innerHTML = '<div class="loading">패스 계산 중…</div>';
+    }
+    const passes = await predictPassesAsync();
+    renderPassList(passes);
+  }
+
+  function schedulePassRefresh() {
+    if (passRefreshHandle) clearInterval(passRefreshHandle);
+    // 첫 렌더가 잡힌 뒤 계산 시작
+    setTimeout(refreshPasses, 250);
+    passRefreshHandle = setInterval(refreshPasses, PREDICT_REFRESH_MS);
   }
 
   // -------------------- 이벤트 --------------------
